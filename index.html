@@ -2,17 +2,283 @@
 <html lang="sv">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>Planritning Pro+</title>
+
 <link rel="manifest" href="manifest.json">
+
+<style>
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  background: #fff;
+  text-align: center;
+}
+
+canvas {
+  border: 1px solid #333;
+  touch-action: none;
+}
+
+.toolbar {
+  padding: 8px;
+}
+
+@media (max-width: 768px) {
+  .toolbar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: #fff;
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    z-index: 10;
+  }
+
+  canvas {
+    margin-bottom: 120px;
+  }
+}
+</style>
 </head>
 <body>
+
 <h2>Planritning Pro+</h2>
-<p>PWA-mall installerad korrekt.</p>
+
+<div class="toolbar">
+  <button onclick="setTool('wall')">Vägg</button>
+  <button onclick="setTool('room')">Rum</button>
+  <button onclick="setTool('door')">Dörr</button>
+  <button onclick="setTool('window')">Fönster</button>
+  <button onclick="setTool('text')">Text</button>
+
+  <button onclick="undo()">Undo</button>
+  <button onclick="redo()">Redo</button>
+
+  <button onclick="savePNG()">PNG</button>
+
+  <label>
+    Grid
+    <input type="checkbox" id="toggleGrid" checked>
+  </label>
+</div>
+
+<canvas id="canvas" width="1200" height="800"></canvas>
+
 <script>
-if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('service-worker.js');
+/* =================== GRUND =================== */
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let tool = "wall";
+let drawing = false;
+
+let startX, startY, currentX, currentY;
+let shapes = [];
+
+let showGrid = true;
+let scale = 1;
+let offsetX = 0;
+let offsetY = 0;
+
+/* =================== UNDO / REDO =================== */
+let undoStack = [];
+let redoStack = [];
+
+function saveState() {
+  undoStack.push(JSON.stringify(shapes));
+  redoStack = [];
 }
+
+function undo() {
+  if (!undoStack.length) return;
+  redoStack.push(JSON.stringify(shapes));
+  shapes = JSON.parse(undoStack.pop());
+  redraw();
+}
+
+function redo() {
+  if (!redoStack.length) return;
+  undoStack.push(JSON.stringify(shapes));
+  shapes = JSON.parse(redoStack.pop());
+  redraw();
+}
+
+document.getElementById("toggleGrid").onchange = e => {
+  showGrid = e.target.checked;
+  redraw();
+};
+
+function setTool(t) {
+  tool = t;
+}
+
+/* =================== MUS =================== */
+canvas.addEventListener("mousedown", e => {
+  drawing = true;
+  const p = getPos(e);
+  startX = p.x;
+  startY = p.y;
+
+  if (tool === "text") {
+    const txt = prompt("Skriv text:");
+    if (txt) {
+      saveState();
+      shapes.push({ tool:"text", x:startX, y:startY, text:txt });
+      redraw();
+    }
+    drawing = false;
+  }
+});
+
+canvas.addEventListener("mousemove", e => {
+  if (!drawing) return;
+  const p = getPos(e);
+  currentX = p.x;
+  currentY = p.y;
+  redraw(true);
+});
+
+canvas.addEventListener("mouseup", e => {
+  if (!drawing) return;
+  drawing = false;
+  saveState();
+  const p = getPos(e);
+  shapes.push({
+    tool,
+    x1:startX, y1:startY,
+    x2:p.x, y2:p.y
+  });
+  redraw();
+});
+
+/* =================== TOUCH + PINCH =================== */
+let lastDist = null;
+
+canvas.addEventListener("touchstart", e => {
+  e.preventDefault();
+  if (e.touches.length === 1) {
+    const t = e.touches[0];
+    startX = (t.clientX - offsetX) / scale;
+    startY = (t.clientY - offsetY) / scale;
+    drawing = true;
+  }
+  if (e.touches.length === 2) {
+    lastDist = dist(e);
+  }
+}, { passive:false });
+
+canvas.addEventListener("touchmove", e => {
+  e.preventDefault();
+
+  if (e.touches.length === 1 && drawing) {
+    const t = e.touches[0];
+    currentX = (t.clientX - offsetX) / scale;
+    currentY = (t.clientY - offsetY) / scale;
+    redraw(true);
+  }
+
+  if (e.touches.length === 2) {
+    const d = dist(e);
+    scale *= d > lastDist ? 1.02 : 0.98;
+    lastDist = d;
+    redraw();
+  }
+}, { passive:false });
+
+canvas.addEventListener("touchend", () => {
+  if (drawing) {
+    drawing = false;
+    saveState();
+    shapes.push({
+      tool,
+      x1:startX, y1:startY,
+      x2:currentX, y2:currentY
+    });
+    redraw();
+  }
+});
+
+function dist(e) {
+  const [a,b] = e.touches;
+  return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+}
+
+/* =================== RENDER =================== */
+function getPos(e) {
+  return {
+    x:(e.clientX - offsetX) / scale,
+    y:(e.clientY - offsetY) / scale
+  };
+}
+
+function drawGrid() {
+  ctx.strokeStyle = "#eee";
+  for (let x=0; x<canvas.width; x+=40*scale) {
+    ctx.beginPath();
+    ctx.moveTo(x+offsetX, 0);
+    ctx.lineTo(x+offsetX, canvas.height);
+    ctx.stroke();
+  }
+}
+
+function drawShape(s) {
+  if (s.tool === "wall") {
+    ctx.beginPath();
+    ctx.moveTo(s.x1*scale+offsetX, s.y1*scale+offsetY);
+    ctx.lineTo(s.x2*scale+offsetX, s.y2*scale+offsetY);
+    ctx.stroke();
+  }
+
+  if (s.tool === "text") {
+    ctx.fillText(
+      s.text,
+      s.x*scale+offsetX,
+      s.y*scale+offsetY
+    );
+  }
+}
+
+function redraw(preview=false) {
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  if (showGrid) drawGrid();
+  shapes.forEach(drawShape);
+
+  if (preview) {
+    drawShape({
+      tool,
+      x1:startX, y1:startY,
+      x2:currentX, y2:currentY
+    });
+  }
+}
+
+/* =================== PNG (VIT BAKGRUND) =================== */
+function savePNG() {
+  const tmp = document.createElement("canvas");
+  tmp.width = canvas.width;
+  tmp.height = canvas.height;
+  const tctx = tmp.getContext("2d");
+
+  tctx.fillStyle = "white";
+  tctx.fillRect(0,0,tmp.width,tmp.height);
+  tctx.drawImage(canvas,0,0);
+
+  const a = document.createElement("a");
+  a.download = "plan.png";
+  a.href = tmp.toDataURL("image/png");
+  a.click();
+}
+
+/* =================== PWA =================== */
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("service-worker.js");
+}
+
+redraw();
 </script>
+
 </body>
 </html>
